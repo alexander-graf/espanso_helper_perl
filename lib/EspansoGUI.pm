@@ -17,6 +17,9 @@ sub new {
         current_file => "base.yml",
         matches => [],
         file_combo => undef,
+        filter_entry => undef,
+        list_store => undef,
+        tree_view => undef,
     };
     bless $self, $class;
     $self->load_matches();
@@ -59,6 +62,10 @@ sub _build_ui {
     $self->{window}->set_title('Espanso Configuration Manager');
     $self->{window}->set_default_size(800, 600);
     
+    # Set the application icon
+    my $icon_path = 'go-jump-3.ico';  # Update this path
+    $self->{window}->set_icon_from_file($icon_path) if -e $icon_path;
+    
     my $main_box = Gtk3::Box->new('vertical', 5);
     $self->{window}->add($main_box);
     
@@ -67,6 +74,11 @@ sub _build_ui {
     
     $self->{file_combo} = $self->_create_file_combo();
     $main_box->pack_start($self->{file_combo}, 0, 0, 0);
+    
+    $self->{filter_entry} = Gtk3::Entry->new();
+    $self->{filter_entry}->set_placeholder_text("Filter matches...");
+    $self->{filter_entry}->signal_connect(changed => sub { $self->filter_matches() });
+    $main_box->pack_start($self->{filter_entry}, 0, 0, 0);
     
     $self->{content_area} = Gtk3::Box->new('vertical', 5);
     $main_box->pack_start($self->{content_area}, 1, 1, 0);
@@ -108,7 +120,6 @@ sub _create_file_combo {
     
     return $combo;
 }
-
 sub show_matches {
     my $self = shift;
     $self->{matches} = [] unless ref($self->{matches}) eq 'ARRAY';
@@ -117,62 +128,65 @@ sub show_matches {
     my $scrolled_window = Gtk3::ScrolledWindow->new();
     $scrolled_window->set_policy('automatic', 'automatic');
     
-    my $list_box = Gtk3::ListBox->new();
-    $scrolled_window->add($list_box);
+    $self->{list_store} = Gtk3::ListStore->new('Glib::String', 'Glib::String', 'Glib::String');
+    $self->{tree_view} = Gtk3::TreeView->new($self->{list_store});
+    
+    my $renderer = Gtk3::CellRendererText->new();
+    my $column = Gtk3::TreeViewColumn->new_with_attributes("Trigger", $renderer, text => 0);
+    $self->{tree_view}->append_column($column);
+    
+    $column = Gtk3::TreeViewColumn->new_with_attributes("Replace", $renderer, text => 1);
+    $self->{tree_view}->append_column($column);
     
     for my $match (@{$self->{matches}}) {
-        my $row = Gtk3::ListBoxRow->new();
-        my $hbox = Gtk3::Box->new('horizontal', 5);
-        
-        my $label = Gtk3::Label->new($match->{trigger} . " -> " . substr($match->{replace}, 0, 30) . "...");
-        $hbox->pack_start($label, 1, 1, 0);
-        
-        my $edit_button = Gtk3::Button->new('Edit');
-        $edit_button->signal_connect(clicked => sub { $self->edit_match($match) });
-        $hbox->pack_start($edit_button, 0, 0, 0);
-        
-        my $delete_button = Gtk3::Button->new('Delete');
-        $delete_button->signal_connect(clicked => sub { $self->delete_match($match) });
-        $hbox->pack_start($delete_button, 0, 0, 0);
-        
-        $row->add($hbox);
-        $list_box->add($row);
+        $self->{list_store}->set($self->{list_store}->append(), 0, $match->{trigger}, 1, substr($match->{replace}, 0, 30) . "...", 2, $match->{trigger});
     }
     
+    $scrolled_window->add($self->{tree_view});
+    
     $self->{content_area}->pack_start($scrolled_window, 1, 1, 0);
+    
+    my $button_box = Gtk3::ButtonBox->new('horizontal');
+    $button_box->set_layout('spread');
+    
+    my $edit_button = Gtk3::Button->new('Edit');
+    $edit_button->signal_connect(clicked => sub { $self->edit_selected_match() });
+    $button_box->add($edit_button);
+    
+    my $delete_button = Gtk3::Button->new('Delete');
+    $delete_button->signal_connect(clicked => sub { $self->delete_selected_match() });
+    $button_box->add($delete_button);
+    
+    $self->{content_area}->pack_start($button_box, 0, 0, 0);
+    
     $self->{content_area}->show_all();
 }
+
+sub filter_matches {
+    my $self = shift;
+    my $filter_text = $self->{filter_entry}->get_text();
+    $self->{list_store}->clear();
+    
+    # Escape special regex characters in the filter text
+    $filter_text = quotemeta($filter_text);
+    
+    for my $match (@{$self->{matches}}) {
+        if ($match->{trigger} =~ /$filter_text/i || $match->{replace} =~ /$filter_text/i) {
+            $self->{list_store}->set(
+                $self->{list_store}->append(), 
+                0, $match->{trigger}, 
+                1, substr($match->{replace}, 0, 30) . "...", 
+                2, $match->{trigger}
+            );
+        }
+    }
+}
+
 
 sub add_match {
     my $self = shift;
     $self->show_match_dialog();
 }
-
-sub edit_match {
-    my ($self, $match) = @_;
-    $self->show_match_dialog($match);
-}
-
-sub delete_match {
-    my ($self, $match) = @_;
-    my $dialog = Gtk3::MessageDialog->new(
-        $self->{window},
-        'modal',
-        'question',
-        'yes-no',
-        "Are you sure you want to delete this match?"
-    );
-    
-    my $response = $dialog->run();
-    $dialog->destroy();
-    
-    if ($response eq 'yes') {
-        @{$self->{matches}} = grep { $_ ne $match } @{$self->{matches}};
-        $self->save_matches();
-        $self->show_matches();
-    }
-}
-
 sub show_match_dialog {
     my ($self, $match) = @_;
     my $dialog = Gtk3::Dialog->new(
@@ -234,6 +248,91 @@ sub show_match_dialog {
     
     $dialog->destroy();
 }
+
+sub edit_selected_match {
+    my $self = shift;
+    my $selection = $self->{tree_view}->get_selection();
+    my ($model, $iter) = $selection->get_selected();
+    
+    if ($iter) {
+        my $trigger = $model->get_value($iter, 2);
+        my ($match) = grep { $_->{trigger} eq $trigger } @{$self->{matches}};
+        $self->show_match_dialog($match) if $match;
+    }
+}
+
+sub delete_selected_match {
+    my $self = shift;
+    my $selection = $self->{tree_view}->get_selection();
+    my ($model, $iter) = $selection->get_selected();
+    
+    if ($iter) {
+        my $trigger = $model->get_value($iter, 2);
+        my ($match) = grep { $_->{trigger} eq $trigger } @{$self->{matches}};
+        $self->delete_match($match) if $match;
+    }
+}
+
+sub delete_match {
+    my ($self, $match) = @_;
+    my $dialog = Gtk3::MessageDialog->new(
+        $self->{window},
+        'modal',
+        'question',
+        'yes-no',
+        "Are you sure you want to delete this match?"
+    );
+    
+    my $response = $dialog->run();
+    $dialog->destroy();
+    
+    if ($response eq 'yes') {
+        @{$self->{matches}} = grep { $_ ne $match } @{$self->{matches}};
+        $self->save_matches();
+        $self->show_matches();
+    }
+}
+sub show_matches {
+    my $self = shift;
+    $self->{matches} = [] unless ref($self->{matches}) eq 'ARRAY';
+    $self->_clear_content_area();
+    
+    my $scrolled_window = Gtk3::ScrolledWindow->new();
+    $scrolled_window->set_policy('automatic', 'automatic');
+    
+    $self->{list_store} = Gtk3::ListStore->new('Glib::String', 'Glib::String', 'Glib::String');
+    $self->{tree_view} = Gtk3::TreeView->new($self->{list_store});
+    
+    my $renderer = Gtk3::CellRendererText->new();
+    my $column = Gtk3::TreeViewColumn->new_with_attributes("Trigger", $renderer, text => 0);
+    $self->{tree_view}->append_column($column);
+    
+    $column = Gtk3::TreeViewColumn->new_with_attributes("Replace", $renderer, text => 1);
+    $self->{tree_view}->append_column($column);
+    
+    $scrolled_window->add($self->{tree_view});
+    
+    $self->{content_area}->pack_start($scrolled_window, 1, 1, 0);
+    
+    my $button_box = Gtk3::ButtonBox->new('horizontal');
+    $button_box->set_layout('spread');
+    
+    my $edit_button = Gtk3::Button->new('Edit');
+    $edit_button->signal_connect(clicked => sub { $self->edit_selected_match() });
+    $button_box->add($edit_button);
+    
+    my $delete_button = Gtk3::Button->new('Delete');
+    $delete_button->signal_connect(clicked => sub { $self->delete_selected_match() });
+    $button_box->add($delete_button);
+    
+    $self->{content_area}->pack_start($button_box, 0, 0, 0);
+    
+    $self->{content_area}->show_all();
+    
+    # Apply the current filter
+    $self->filter_matches();
+}
+
 
 sub _clear_content_area {
     my $self = shift;
