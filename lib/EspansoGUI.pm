@@ -63,8 +63,11 @@ sub _build_ui {
     $self->{window}->set_default_size(800, 600);
     
     # Set the application icon
-    my $icon_path = 'go-jump-3.ico';  # Update this path
+    my $icon_path = 'pympd.ico';  # Update this path
     $self->{window}->set_icon_from_file($icon_path) if -e $icon_path;
+    
+    # Add this line to handle the window close event
+    $self->{window}->signal_connect(delete_event => sub { Gtk3::main_quit(); });
     
     my $main_box = Gtk3::Box->new('vertical', 5);
     $self->{window}->add($main_box);
@@ -85,6 +88,7 @@ sub _build_ui {
     
     $self->{window}->show_all();
 }
+
 
 sub _create_toolbar {
     my $self = shift;
